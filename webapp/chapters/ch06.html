@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-Hans"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>使用 Ray 实现分布式 PPO：伪代码示例 — 分布式 PPO 中文版</title>
+<meta name="description" content="MakinaRocks 技术文章《Distributed PPO 구현》的简体中文译本：PPO 采样流程、Learner 与 Actor、Ray 远程对象及分布式实现。">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/site.css"></head>
+<body><header class="topbar"><a class="brand" href="../index.html">分布式 PPO 中文版<span>MakinaRocks 技术博客</span></a>
+<nav class="chapnav" aria-label="阅读导航"><a href="../index.html">目录</a><a href="../full.html">全文阅读</a><a href="https://makinarocks.github.io/Distributed-PPO-implementation/">原文 ↗</a></nav></header>
+<div class="layout"><aside class="sidebar"><nav class="toc" aria-label="章节目录"><h2>阅读目录</h2><ol><li><a href="ch01.html">01　引言</a></li><li><a href="ch02.html">02　PPO（近端策略优化）</a></li><li><a href="ch03.html">03　PPO 的训练流程与分布式处理</a></li><li><a href="ch04.html">04　实现分布式 PPO 时的考虑事项</a></li><li><a href="ch05.html">05　Ray 简介</a></li><li><a class="active" aria-current="page" href="ch06.html">06　使用 Ray 实现分布式 PPO：伪代码示例</a></li><li><a href="ch07.html">07　训练时间比较：8 个 Actor 与单个 Actor</a></li><li><a href="ch08.html">08　结语</a></li></ol></nav></aside>
+<main class="main"><details class="mobile-toc"><summary>阅读目录</summary><ol><li><a href="ch01.html">01　引言</a></li><li><a href="ch02.html">02　PPO（近端策略优化）</a></li><li><a href="ch03.html">03　PPO 的训练流程与分布式处理</a></li><li><a href="ch04.html">04　实现分布式 PPO 时的考虑事项</a></li><li><a href="ch05.html">05　Ray 简介</a></li><li><a class="active" aria-current="page" href="ch06.html">06　使用 Ray 实现分布式 PPO：伪代码示例</a></li><li><a href="ch07.html">07　训练时间比较：8 个 Actor 与单个 Actor</a></li><li><a href="ch08.html">08　结语</a></li></ol></details>
+<article class="prose"><p class="article-meta">第 6 节 / 共 8 节</p><h1 id="ch06">使用 Ray 实现分布式 PPO：伪代码示例</h1>
+<ul>
+<li>下面用伪代码展示如何使用 Ray 实现分布式 PPO。</li>
+<li>
+<p>PPOActor</p>
+<pre><code class="language-python">  class PPOActor(object):
+  		...
+      def get_trajectory_segment(self) -&gt; PPOTrajectorySegment:
+          ...
+  		def set_model(self,model)
+          ...
+</code></pre>
+</li>
+<li>
+<p>PPOLearner</p>
+<pre><code class="language-python">  class PPOLearner(object):
+      ...
+      def train(self,segments: List[PPOTrajectorySegment]):
+          ...
+
+      def get_model(self):
+          ...
+</code></pre>
+</li>
+<li>
+<p>运行器（runner）</p>
+<pre><code class="language-python">  PPOActorRemote = ray.remote(PPOActor)
+
+  def run(num_of_actors):
+      ray.init()
+
+      learner = PPOLearner()
+
+      actors = []
+
+      for i in range(num_of_actors):
+          actor = PPOActorRemote()
+          actors.append(actor)
+
+      model = learner.get_model()
+
+      futures = [actor.set_model.remote(model) for actor in actors]
+      ray.wait(futures, num_returns=len(actors))
+
+      while True:
+          segments_future = [actor.get_trajectory_segment.remote() for actor in actors]
+          ray.wait(segments_future, num_returns=len(actors))
+          segments = ray.get(segments_future)
+
+          learner.train(segments)
+
+          model = learner.get_model()
+
+          futures = [actor.set_model.remote(model) for actor in actors]
+          ray.wait(futures, num_returns=len(actors))
+</code></pre>
+</li>
+</ul>
+<aside class="translator-note"><strong>译者注</strong><p>这段代码是结构示意。原文 <code>set_model</code> 定义缺少冒号，且混用了制表符和空格；<code>PPOActorRemote()</code> 按 Ray 的 Actor 创建方式应为 <code>PPOActorRemote.remote()</code>。译文保留原代码，仅翻译注释；不可直接当作完整训练脚本运行。见 <a href="https://docs.ray.io/en/latest/ray-core/actors.html">Ray Actor 文档</a>。</p></aside></article><nav class="pager" aria-label="章节翻页"><a href="ch05.html"><span class="dir">← 上一节</span><div class="ttl">Ray 简介</div></a><a class="next" href="ch07.html"><span class="dir">下一节 →</span><div class="ttl">训练时间比较：8 个 Actor 与单个 Actor</div></a></nav>
+<footer class="pagefoot">非官方中文译本 · 原作者 jemin kim（MakinaRocks） · 原文发表于 2020-12-01 · <a href="https://makinarocks.github.io/Distributed-PPO-implementation/">原文链接</a>。依据用户提供的本地 HTML 翻译；正文、插图与代码的权利归原权利人所有。译者注与原文分开标示。</footer></main></div>
+<script src="../assets/site.js"></script></body></html>

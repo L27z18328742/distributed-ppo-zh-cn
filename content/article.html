@@ -1,0 +1,224 @@
+<h1>分布式 PPO 的实现</h1>
+<h2 id="ch01">引言</h2>
+<p>大家好，我是 MakinaRocks 的 Kim Jemin。</p>
+<p>在强化学习中，漫长的训练时间往往成为项目的瓶颈。因此，在实际项目中，缩短训练时间是非常重要的一环。本文将介绍如何通过分布式处理来缩短 PPO 的训练时间。</p>
+
+<h2 id="ch02">PPO（近端策略优化）</h2>
+<ul>
+<li>近端策略优化（Proximal Policy Optimization，PPO）的表现与当时最先进的方法相当，甚至更好，同时实现和调参都要简单得多。（引自 OpenAI）</li>
+<li>TRPO（Trust Region Policy Optimization，信赖域策略优化）提出了一套理论：在训练过程中不降低策略性能的范围内，尽可能提升策略的性能。</li>
+<li>PPO 可以看作一种使用裁剪目标（Clipped Objective），简化 TRPO 算法复杂计算过程的算法。</li>
+<li>如果想进一步了解 PPO，请参考以下资料：<ul>
+<li>PPO 论文：<a href="https://arxiv.org/abs/1707.06347">https://arxiv.org/abs/1707.06347</a></li>
+<li>TRPO 论文：<a href="https://arxiv.org/abs/1502.05477">https://arxiv.org/abs/1502.05477</a></li>
+<li>OpenAI Spinning Up：<a href="https://spinningup.openai.com/en/latest/algorithms/ppo.html">https://spinningup.openai.com/en/latest/algorithms/ppo.html</a></li>
+</ul>
+</li>
+</ul>
+
+<h2 id="ch03">PPO 的训练流程与分布式处理</h2>
+<ul>
+<li>PPO 可以采用多种训练方式，但该论文（<a href="https://arxiv.org/abs/1707.06347">arXiv:1707.06347</a>）提出了一种收集长度为 T 的固定长度轨迹片段（trajectory segment）进行训练的方法。这里，T 取小于一个回合长度（episode length）的值。</li>
+<li>轨迹片段由 N 个 Actor（强化学习环境 + 智能体）收集，训练时使用这 N 个 Actor 收集到的轨迹片段。</li>
+<li>收集到的轨迹共有 NT 个时间步。最终，将这些数据划分为大小为 M 的小批量（mini-batch），训练 K 轮（epoch），其中 M ≤ NT。</li>
+<li>上述内容可概括如下。（出自 <a href="https://arxiv.org/abs/1707.06347">arXiv:1707.06347</a>）</li>
+</ul>
+<figure><img alt="图 1 · PPO 的 Actor-Critic 形式伪代码。N 个 Actor 分别收集 T 个时间步的数据；用大小为 M ≤ NT 的小批量优化 K 轮，然后更新旧策略参数。" src="assets/images/ppo-pseudo-code.png"/><figcaption>图 1 · PPO 的 Actor-Critic 形式伪代码。N 个 Actor 分别收集 T 个时间步的数据；用大小为 M ≤ NT 的小批量优化 K 轮，然后更新旧策略参数。</figcaption></figure><details class="figure-text"><summary>图 1 的中文文字版</summary>
+<p><strong>算法 1：PPO（Actor-Critic 形式）</strong></p>
+<ol><li>对每次迭代（iteration = 1, 2, …）：<ol><li>对每个 Actor（actor = 1, 2, …, N）：在环境中运行旧策略 π<sub>θ_old</sub> 共 T 个时间步，计算优势估计 Â₁, …, Â<sub>T</sub>。</li><li>针对参数 θ 优化代理目标 L；共进行 K 轮训练，小批量大小为 M ≤ NT。</li><li>更新旧策略参数：θ<sub>old</sub> ← θ。</li></ol></li></ol></details>
+<ul>
+<li>从分布式处理的角度来看，PPO 的训练流程主要可以从两个方面进行考虑。<ul>
+<li>轨迹收集的分布式处理<ul>
+<li>在训练流程中，N 个 Actor 分别收集轨迹片段。如果让各个 Actor 独立运行，同时收集轨迹，那么理论上，轨迹片段的收集过程可以加快 N 倍。</li>
+</ul>
+</li>
+<li>SGD 的分布式处理<ul>
+<li>如果神经网络模型规模较大，可以通过分布式 SGD 来缩短训练时间。</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>这两种分布式处理方式都值得考虑。不过，一般而言，轨迹收集占据了强化学习总耗时的很大一部分，因此仅将轨迹收集分布式化，就足以显著提高训练速度。</li>
+<li>本文将重点介绍轨迹收集的分布式处理。</li>
+</ul>
+<aside class="translator-note"><strong>译者注</strong><p>“理论上加快 N 倍”描述的是理想条件下的采样阶段。实际加速还受环境负载、通信与同步开销影响，不等于整个训练过程加快 N 倍。</p></aside>
+<h2 id="ch04">实现分布式 PPO 时的考虑事项</h2>
+<ul>
+<li>实现分布式 PPO 时，主要可以考虑两个组件。<ul>
+<li>Learner（学习器）<ul>
+<li>从各个 Actor 收集轨迹，并执行实际的训练。</li>
+<li>在整个训练流程中担任主控（master）。除了收集轨迹，还负责使 Actor 的模型与 Learner 的模型保持同步。</li>
+</ul>
+</li>
+<li>Actor（采样执行器）<ul>
+<li>强化学习环境 + 智能体。</li>
+<li>实际的 PPO 智能体在强化学习环境中运行，生成轨迹。</li>
+<li>根据 Learner 的请求生成轨迹片段，并由 Learner 更新其模型。</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>为了按 Learner、Actor 的结构实现系统，需要根据功能对 PPO 算法进行模块化。<ul>
+<li>PPO Model：神经网络模型。</li>
+<li>PPO Agent：PPO 强化学习智能体。</li>
+<li>PPO Sampler：轨迹收集。</li>
+<li>PPO Trainer：神经网络训练。</li>
+</ul>
+</li>
+</ul>
+<figure><img alt="图 2 · PPO 的模块关系。Model：模型；Agent：智能体；Sampler：采样器；Trainer：训练器；Env：环境；Optimizer：优化器。Agent 包含 Model，Sampler 组合 Agent 与环境，Trainer 组合 Agent 与优化器。" src="assets/images/ppo_modules.png"/><figcaption>图 2 · PPO 的模块关系。Model：模型；Agent：智能体；Sampler：采样器；Trainer：训练器；Env：环境；Optimizer：优化器。Agent 包含 Model，Sampler 组合 Agent 与环境，Trainer 组合 Agent 与优化器。</figcaption></figure>
+<ul>
+<li>接下来，为了实现分布式处理，我们将介绍 Ray 库。</li>
+</ul>
+
+<h2 id="ch05">Ray 简介</h2>
+<ul>
+<li>Ray 提供了一个库，可以非常方便地实现分布式对象及其之间的数据通信。本文将通过一个简单的 Ray 示例，帮助理解 PPO 的分布式处理。</li>
+<li>关于 Ray 的更多信息，请参考：<ul>
+<li>Ray 文档：<a href="https://docs.ray.io/en/latest/">https://docs.ray.io/en/latest/</a></li>
+</ul>
+</li>
+<li>
+<p>示例</p>
+<pre><code class="language-python">  import ray
+
+  ray.init()
+
+  @ray.remote
+  class Accumulator(object):
+      def __init__(self,n):
+          self.n = n
+
+      def increment(self,v):
+          self.n += v
+
+      def read(self):
+          return self.n
+
+  accumulators = [Accumulator.remote(i) for i in range(4)]
+  [acc.increment.remote(2) for acc in accumulators]
+  futures = [acc.read.remote() for acc in accumulators]
+  print(ray.get(futures)) # [2, 3, 4, 5]
+</code></pre>
+<ul>
+<li>连接 Ray 集群<ul>
+<li>
+<p>要使用 Ray 的远程功能，需要连接到 Ray 集群。</p>
+<pre><code class="language-python">  ray.init()
+</code></pre>
+</li>
+</ul>
+</li>
+<li>远程类实例（Ray Actor）<ul>
+<li>
+<p>要在工作节点（worker node）上远程创建类实例，可以使用 <strong>@ray.remote</strong> 装饰器。</p>
+<pre><code class="language-python">  @ray.remote
+  class Accumulator(object):
+       ...
+</code></pre>
+</li>
+<li>
+<p>创建远程类实例和调用远程方法时，在调用处加上 <strong>.remote</strong>。</p>
+<pre><code class="language-python">  acc = Accumulator.remote(3) # 创建远程类实例（Ray Actor） 
+  future = acc.increment.remote(2) # 远程方法调用 
+</code></pre>
+</li>
+</ul>
+</li>
+<li>Future（异步结果引用）<ul>
+<li>
+<p>远程函数调用会以 Future 的形式返回结果引用。</p>
+<pre><code class="language-python">  future = acc.increment.remote(2)
+</code></pre>
+</li>
+<li>
+<p>等待 Future 对应的任务执行完成：</p>
+<pre><code class="language-python">  ray.wait(future)
+</code></pre>
+</li>
+<li>
+<p>获取 Future 对应的结果值：</p>
+<pre><code class="language-python">  ray.get(future)
+</code></pre>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<aside class="translator-note"><strong>译者注</strong><p>原文使用 Future 一词；Ray 文档使用 ObjectRef 表示异步结果引用。原例的 <code>ray.wait(future)</code> 保留原样；API 要求传入引用列表，应写作 <code>ray.wait([future])</code>。此外，<code>ray.init()</code> 可初始化本地实例，也可连接集群。见 <a href="https://docs.ray.io/en/latest/ray-core/api/doc/ray.wait.html">ray.wait 文档</a>与 <a href="https://docs.ray.io/en/latest/ray-core/api/doc/ray.init.html">ray.init 文档</a>。</p></aside>
+<h2 id="ch06">使用 Ray 实现分布式 PPO：伪代码示例</h2>
+<ul>
+<li>下面用伪代码展示如何使用 Ray 实现分布式 PPO。</li>
+<li>
+<p>PPOActor</p>
+<pre><code class="language-python">  class PPOActor(object):
+  		...
+      def get_trajectory_segment(self) -&gt; PPOTrajectorySegment:
+          ...
+  		def set_model(self,model)
+          ...
+</code></pre>
+</li>
+<li>
+<p>PPOLearner</p>
+<pre><code class="language-python">  class PPOLearner(object):
+      ...
+      def train(self,segments: List[PPOTrajectorySegment]):
+          ...
+
+      def get_model(self):
+          ...
+</code></pre>
+</li>
+<li>
+<p>运行器（runner）</p>
+<pre><code class="language-python">  PPOActorRemote = ray.remote(PPOActor)
+
+  def run(num_of_actors):
+      ray.init()
+
+      learner = PPOLearner()
+
+      actors = []
+
+      for i in range(num_of_actors):
+          actor = PPOActorRemote()
+          actors.append(actor)
+
+      model = learner.get_model()
+
+      futures = [actor.set_model.remote(model) for actor in actors]
+      ray.wait(futures, num_returns=len(actors))
+
+      while True:
+          segments_future = [actor.get_trajectory_segment.remote() for actor in actors]
+          ray.wait(segments_future, num_returns=len(actors))
+          segments = ray.get(segments_future)
+
+          learner.train(segments)
+
+          model = learner.get_model()
+
+          futures = [actor.set_model.remote(model) for actor in actors]
+          ray.wait(futures, num_returns=len(actors))
+</code></pre>
+</li>
+</ul>
+<aside class="translator-note"><strong>译者注</strong><p>这段代码是结构示意。原文 <code>set_model</code> 定义缺少冒号，且混用了制表符和空格；<code>PPOActorRemote()</code> 按 Ray 的 Actor 创建方式应为 <code>PPOActorRemote.remote()</code>。译文保留原代码，仅翻译注释；不可直接当作完整训练脚本运行。见 <a href="https://docs.ray.io/en/latest/ray-core/actors.html">Ray Actor 文档</a>。</p></aside>
+<h2 id="ch07">训练时间比较：8 个 Actor 与单个 Actor</h2>
+<ul>
+<li>横轴：时间。</li>
+<li>纵轴：每个回合的奖励（episode reward）。</li>
+</ul>
+<figure><img alt="图 3 · 8 个 Actor 与单个 Actor 的训练曲线。横轴为时间，纵轴为回合奖励；蓝色为单 Actor，其余曲线为分布式 Actor。原图未注明时间单位。" src="assets/images/Distributed_ppo_result.png"/><figcaption>图 3 · 8 个 Actor 与单个 Actor 的训练曲线。横轴为时间，纵轴为回合奖励；蓝色为单 Actor，其余曲线为分布式 Actor。原图未注明时间单位。</figcaption></figure>
+<ul>
+<li>这张图比较了使用 8 个 Actor 训练与使用 1 个 Actor 训练的实验结果。</li>
+<li>图中左侧可以看到分布式 Actor 的曲线，蓝色曲线则对应单个 Actor。</li>
+<li>可以看到，采用分布式处理后，训练时间明显缩短。</li>
+</ul>
+<aside class="translator-note"><strong>译者注</strong><p>这是作者在 2020 年文章中展示的实验结果。原文未给出完整环境、硬件配置、时间单位或可复现实验脚本；此图不构成普遍的加速比保证。</p></aside>
+<h2 id="ch08">结语</h2>
+<p>以上介绍了 PPO 的分布式实现。</p>
+<p>本文聚焦于分布式处理中的轨迹收集。不过，当模型规模变大时，也需要考虑分布式 SGD。</p>
+<p>下次有机会，我们还将介绍模型的分布式训练。</p>

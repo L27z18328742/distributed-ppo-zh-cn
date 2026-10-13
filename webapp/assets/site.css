@@ -1,0 +1,23 @@
+:root { --serif: "Noto Serif SC", "Songti SC", SimSun, Georgia, serif; --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+.reading-head { padding: 1.4rem 0 2rem; }
+.eyebrow { color: var(--accent); font-size: .8rem; letter-spacing: .12em; font-weight: 600; }
+.reading-head h1 { font-size: clamp(2rem,4vw,2.8rem); margin-top: .6rem; }
+.subtitle,.article-meta { color: var(--fg-muted); font-size: .88rem; }
+.reading-meta { display:flex; flex-wrap:wrap; gap:1.2rem; color:var(--fg-muted); font-size:.82rem; margin:1.4rem 0; }
+.read-button { display:inline-block; padding:.45rem 1rem; border-radius:8px; background:var(--accent); color:var(--bg); font-weight:600; font-size:.9rem; }
+.full-link { margin-left:1rem; font-size:.9rem; }
+.prose .chapter-grid { margin-top:1rem; }
+.prose h1[id],.prose h2[id] { scroll-margin-top:5rem; }
+.prose figure { margin:1.5rem 0; }
+.prose figcaption { color:var(--fg-muted); font-size:.82rem; line-height:1.7; padding:.5rem 0; }
+.translator-note { border-left:3px solid var(--accent-2); background:var(--panel-2); padding:.7rem 1rem; border-radius:0 8px 8px 0; margin:1.6rem 0; font-size:.86rem; }
+.translator-note p { margin:.3rem 0; }
+.figure-text { border:1px solid var(--border); border-radius:8px; padding:.6rem 1rem; font-size:.88rem; }
+summary { cursor:pointer; color:var(--accent); }
+.mobile-toc { display:none; padding:.6rem 0; margin-bottom:1rem; }
+.code-copy { display:block; margin:0 0 .4rem auto; color:var(--fg-muted); border:1px solid var(--border); background:var(--panel); border-radius:5px; padding:.2rem .6rem; cursor:pointer; font: .75rem var(--sans); }
+.prose li { overflow-wrap:anywhere; }
+a:focus-visible,button:focus-visible,summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+@media(max-width:900px) { .mobile-toc { display:block; } .brand span { display:none; } }
+@media(max-width:600px) { .topbar { gap:.4rem; padding:.65rem .8rem; flex-wrap:wrap; } .brand { font-size:.95rem; } .chapnav { font-size:.76rem; gap:.6rem; } .layout { padding:1rem 1rem 3rem; } .prose ul,.prose ol { padding-left:1.3rem; } .prose pre { padding:.8rem; } .pager { grid-template-columns:1fr; } .pager .next { grid-column:1; } }
+@media(prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } .card { transition:none; } }

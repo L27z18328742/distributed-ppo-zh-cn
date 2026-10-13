@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-Hans"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PPO 的训练流程与分布式处理 — 分布式 PPO 中文版</title>
+<meta name="description" content="MakinaRocks 技术文章《Distributed PPO 구현》的简体中文译本：PPO 采样流程、Learner 与 Actor、Ray 远程对象及分布式实现。">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/site.css"></head>
+<body><header class="topbar"><a class="brand" href="../index.html">分布式 PPO 中文版<span>MakinaRocks 技术博客</span></a>
+<nav class="chapnav" aria-label="阅读导航"><a href="../index.html">目录</a><a href="../full.html">全文阅读</a><a href="https://makinarocks.github.io/Distributed-PPO-implementation/">原文 ↗</a></nav></header>
+<div class="layout"><aside class="sidebar"><nav class="toc" aria-label="章节目录"><h2>阅读目录</h2><ol><li><a href="ch01.html">01　引言</a></li><li><a href="ch02.html">02　PPO（近端策略优化）</a></li><li><a class="active" aria-current="page" href="ch03.html">03　PPO 的训练流程与分布式处理</a></li><li><a href="ch04.html">04　实现分布式 PPO 时的考虑事项</a></li><li><a href="ch05.html">05　Ray 简介</a></li><li><a href="ch06.html">06　使用 Ray 实现分布式 PPO：伪代码示例</a></li><li><a href="ch07.html">07　训练时间比较：8 个 Actor 与单个 Actor</a></li><li><a href="ch08.html">08　结语</a></li></ol></nav></aside>
+<main class="main"><details class="mobile-toc"><summary>阅读目录</summary><ol><li><a href="ch01.html">01　引言</a></li><li><a href="ch02.html">02　PPO（近端策略优化）</a></li><li><a class="active" aria-current="page" href="ch03.html">03　PPO 的训练流程与分布式处理</a></li><li><a href="ch04.html">04　实现分布式 PPO 时的考虑事项</a></li><li><a href="ch05.html">05　Ray 简介</a></li><li><a href="ch06.html">06　使用 Ray 实现分布式 PPO：伪代码示例</a></li><li><a href="ch07.html">07　训练时间比较：8 个 Actor 与单个 Actor</a></li><li><a href="ch08.html">08　结语</a></li></ol></details>
+<article class="prose"><p class="article-meta">第 3 节 / 共 8 节</p><h1 id="ch03">PPO 的训练流程与分布式处理</h1>
+<ul>
+<li>PPO 可以采用多种训练方式，但该论文（<a href="https://arxiv.org/abs/1707.06347">arXiv:1707.06347</a>）提出了一种收集长度为 T 的固定长度轨迹片段（trajectory segment）进行训练的方法。这里，T 取小于一个回合长度（episode length）的值。</li>
+<li>轨迹片段由 N 个 Actor（强化学习环境 + 智能体）收集，训练时使用这 N 个 Actor 收集到的轨迹片段。</li>
+<li>收集到的轨迹共有 NT 个时间步。最终，将这些数据划分为大小为 M 的小批量（mini-batch），训练 K 轮（epoch），其中 M ≤ NT。</li>
+<li>上述内容可概括如下。（出自 <a href="https://arxiv.org/abs/1707.06347">arXiv:1707.06347</a>）</li>
+</ul>
+<figure><img alt="图 1 · PPO 的 Actor-Critic 形式伪代码。N 个 Actor 分别收集 T 个时间步的数据；用大小为 M ≤ NT 的小批量优化 K 轮，然后更新旧策略参数。" src="../assets/images/ppo-pseudo-code.png"/><figcaption>图 1 · PPO 的 Actor-Critic 形式伪代码。N 个 Actor 分别收集 T 个时间步的数据；用大小为 M ≤ NT 的小批量优化 K 轮，然后更新旧策略参数。</figcaption></figure><details class="figure-text"><summary>图 1 的中文文字版</summary>
+<p><strong>算法 1：PPO（Actor-Critic 形式）</strong></p>
+<ol><li>对每次迭代（iteration = 1, 2, …）：<ol><li>对每个 Actor（actor = 1, 2, …, N）：在环境中运行旧策略 π<sub>θ_old</sub> 共 T 个时间步，计算优势估计 Â₁, …, Â<sub>T</sub>。</li><li>针对参数 θ 优化代理目标 L；共进行 K 轮训练，小批量大小为 M ≤ NT。</li><li>更新旧策略参数：θ<sub>old</sub> ← θ。</li></ol></li></ol></details>
+<ul>
+<li>从分布式处理的角度来看，PPO 的训练流程主要可以从两个方面进行考虑。<ul>
+<li>轨迹收集的分布式处理<ul>
+<li>在训练流程中，N 个 Actor 分别收集轨迹片段。如果让各个 Actor 独立运行，同时收集轨迹，那么理论上，轨迹片段的收集过程可以加快 N 倍。</li>
+</ul>
+</li>
+<li>SGD 的分布式处理<ul>
+<li>如果神经网络模型规模较大，可以通过分布式 SGD 来缩短训练时间。</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>这两种分布式处理方式都值得考虑。不过，一般而言，轨迹收集占据了强化学习总耗时的很大一部分，因此仅将轨迹收集分布式化，就足以显著提高训练速度。</li>
+<li>本文将重点介绍轨迹收集的分布式处理。</li>
+</ul>
+<aside class="translator-note"><strong>译者注</strong><p>“理论上加快 N 倍”描述的是理想条件下的采样阶段。实际加速还受环境负载、通信与同步开销影响，不等于整个训练过程加快 N 倍。</p></aside></article><nav class="pager" aria-label="章节翻页"><a href="ch02.html"><span class="dir">← 上一节</span><div class="ttl">PPO（近端策略优化）</div></a><a class="next" href="ch04.html"><span class="dir">下一节 →</span><div class="ttl">实现分布式 PPO 时的考虑事项</div></a></nav>
+<footer class="pagefoot">非官方中文译本 · 原作者 jemin kim（MakinaRocks） · 原文发表于 2020-12-01 · <a href="https://makinarocks.github.io/Distributed-PPO-implementation/">原文链接</a>。依据用户提供的本地 HTML 翻译；正文、插图与代码的权利归原权利人所有。译者注与原文分开标示。</footer></main></div>
+<script src="../assets/site.js"></script></body></html>

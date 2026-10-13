@@ -1,0 +1,19 @@
+{
+  "pages": 10,
+  "sections": 8,
+  "translated_text_nodes": 80,
+  "images": 3,
+  "code_blocks": 10,
+  "code_preserved_except_comments": true,
+  "local_links_valid": true,
+  "untranslated_korean_in_article": false,
+  "browser_images_loaded": 3,
+  "browser_copy_button_verified": true,
+  "algorithm_chinese_expansion_verified": true,
+  "responsive_widths_checked": [
+    390,
+    1200
+  ],
+  "horizontal_page_overflow": false,
+  "browser_errors": []
+}
